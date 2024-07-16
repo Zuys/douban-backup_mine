@@ -1,6 +1,7 @@
 import got from 'got';
 import { JSDOM } from 'jsdom';
 import dayjs from 'dayjs';
+import { consola } from 'consola';
 import { ItemCategory } from './types';
 import DB_PROPERTIES from '../cols.json';
 
@@ -14,7 +15,7 @@ const InfoSelector = '#info span.pl';
 export default async function scrapyDouban(link: string, category: ItemCategory): Promise<{
     [key: string]: string | string[] | number | null | undefined;
 }> {
-  console.log(`Scraping ${category} item with link: ${link}`);
+  consola.start(`Scraping ${category} item with link: ${link}`);
   const response = await got(link);
   const dom = new JSDOM(response.body);
   const doc = dom.window.document;
@@ -40,9 +41,21 @@ function buildMovieItem(doc: Document) {
   const year = doc.querySelector('#content h1 .year')?.textContent?.slice(1, -1) || '';
   const img = doc.querySelector(ImgSelector) as HTMLImageElement;
   const poster = img?.title === ImgDefaultTitle.Poster ? img?.src?.trim().replace(/\.webp$/, '.jpg') : '';
-  const directors = doc.querySelector('#info .attrs')?.textContent || '';
-  const actors = [...doc.querySelectorAll('#info .actor .attrs a')]
-    .slice(0, 5).map(i => i.textContent).join(' / ');
+
+  const infoPl = [...doc.querySelectorAll(InfoSelector)];
+  const directorPl = infoPl.filter(i => i.textContent === '导演');
+  const directors = (directorPl.length ? directorPl[0] : infoPl[0]).nextElementSibling?.textContent?.trim() || '';
+  const actorsPl = infoPl.filter(i => i.textContent === '主演');
+  const actors = actorsPl.length
+    ? [...actorsPl[0].nextElementSibling?.querySelectorAll('span a')!]
+      .slice(0, 5).map(i => i.textContent).join(' / ')
+    : '';
+  const writersPl = infoPl.filter(i => i.textContent === '编剧');
+  const writers = writersPl.length
+    ? [...writersPl[0].nextElementSibling?.querySelectorAll('span a')!]
+      .slice(0, 5).map(i => i.textContent).join(' / ')
+    : '';
+  console.log('writers: ', writers);
   const genre = [...doc.querySelectorAll('#info [property="v:genre"]')].map(i => i.textContent || '').filter(v => v);
   const imdbInfo = [...doc.querySelectorAll(InfoSelector)].filter(i => i.textContent?.startsWith('IMDb'));
   const imdbLink = imdbInfo.length ? 'https://www.imdb.com/title/' + imdbInfo[0].nextSibling?.textContent?.trim() : '';
@@ -53,6 +66,7 @@ function buildMovieItem(doc: Document) {
     [DB_PROPERTIES.YEAR]: year,
     [DB_PROPERTIES.POSTER]: poster, // optional
     [DB_PROPERTIES.DIRECTORS]: directors,
+    [DB_PROPERTIES.SCREENWRITERS]: writers, // optional
     [DB_PROPERTIES.ACTORS]: actors,
     [DB_PROPERTIES.GENRE]: genre,
     [DB_PROPERTIES.IMDB_LINK]: imdbLink, // optional
@@ -88,10 +102,11 @@ function buildBookItem(doc: Document) {
   const cover = img?.title !== ImgDefaultTitle.Cover && img?.src.length <= 100 ? img?.src.replace(/\.webp$/, '.jpg') : '';
   const info = [...doc.querySelectorAll(InfoSelector)];
 
-  let writer = '', publisher = '', bookTitle = '', publishDate = '', isbn = 0;
+  let writer = '', publisher = '', bookTitle = title, publishDate = '', isbn = 0;
   info.forEach(i => {
     const text = i.textContent?.trim() || '';
-    let nextText = i.nextSibling?.textContent?.trim() || '';
+    // nextSibling 也可能是个空的 #text node
+    let nextText = i.nextSibling?.textContent?.trim() || i.nextElementSibling?.textContent?.trim() || '';
 
     if (text.startsWith('作者')) {
       writer = i.parentElement?.id === 'info'
@@ -101,7 +116,8 @@ function buildBookItem(doc: Document) {
         : i.parentElement?.textContent?.trim().replace('作者:', '').trim() || '';
 
     } else if (text.startsWith('出版社')) {
-      publisher = i.nextElementSibling?.tagName === 'BR'
+      // nextSibling 也可能是个空的 #text node，则需要跳过
+      publisher = (i.nextElementSibling?.tagName === 'BR' || !i.nextSibling?.textContent?.trim())
         ? nextText
         // 出版社可能有单独链接 <a>上海三联书店</a>
         : i.parentElement?.textContent?.trim() || '';
@@ -121,7 +137,6 @@ function buildBookItem(doc: Document) {
   });
 
   return {
-    [DB_PROPERTIES.BOOK_TITLE]: title,
     [DB_PROPERTIES.NAME]: title,
     [DB_PROPERTIES.COVER]: cover, // optional
     [DB_PROPERTIES.WRITER]: writer, // optional
